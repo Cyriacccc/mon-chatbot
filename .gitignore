@@ -1,0 +1,14 @@
+# Tes discussions : elles restent sur ton PC
+conversations/
+conversation.json
+conversation.json.bak
+
+# Tes secrets (clé API, mot de passe) : JAMAIS sur GitHub
+.streamlit/secrets.toml
+.env
+
+# Captures d'écran (elles contiennent ta clé)
+*.png
+
+# Fichiers générés par Python
+__pycache__/

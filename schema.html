@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schéma du chatbot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+/* VOICE: calme, pédagogique, pour un débutant qui veut comprendre
+   IDEA: un plan de métro, le message est une rame qui fait le tour des stations
+   PICTURE: la carte des lignes aller (bleu), retour (rouge), outils (ambre), clé (vert)
+   COLOUR and TYPE: blanc / nuit #0e1116, couleurs de lignes franches, Figtree 800 + Figtree
+   LAYOUT: titre, grande carte, puis légende des lignes, historique, boucle des outils */
+:root{color-scheme:light dark;--bg:light-dark(#ffffff,#0e1116);--ink:light-dark(#111418,#e9ecef);--mute:light-dark(#5b636d,#9aa3ad);--rule:light-dark(#e3e6ea,#262c34);--soft:light-dark(#f4f6f8,#161b22);
+--red:#e6261f;--blue:#0a5cff;--amber:#ffb400;--green:#00a05a}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Figtree,system-ui,sans-serif;overflow-x:clip}
+.band{padding:clamp(28px,4vw,64px) max(5vw,16px)}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-weight:800;font-size:clamp(32px,5vw,50px);line-height:1.05;margin:0 0 12px;text-wrap:balance}
+h2{font-weight:800;font-size:26px;line-height:1.15;margin:0 0 8px;text-wrap:balance}
+p{margin:0 0 12px;max-width:68ch}
+.lead{font-size:17px;color:var(--mute)}
+code{font-family:ui-monospace,Consolas,monospace;font-size:14px;background:var(--soft);padding:1px 6px;border-radius:5px;overflow-wrap:anywhere}
+.scroll{overflow-x:auto}
+figure{margin:24px 0 0}
+figure svg{display:block;width:100%;min-width:760px;height:auto}
+figcaption{color:var(--mute);font-size:14px;margin-top:8px}
+.st{fill:var(--bg)}
+.voyageur{offset-path:path("M80,120 L750,120 L860,230 L750,340 L80,340 Z");animation:tour 9s linear infinite}
+@keyframes tour{from{offset-distance:0%}to{offset-distance:100%}}
+@media (prefers-reduced-motion:reduce){.voyageur{animation:none;display:none}}
+.lines{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:28px;margin-top:20px}
+.line{padding-left:18px;border-left:8px solid var(--c)}
+.line h3{margin:0 0 4px;font-size:18px;font-weight:800}
+.line p{font-size:15px;margin-bottom:8px}
+.alt{background:var(--soft)}
+.tours{display:grid;gap:12px;margin-top:20px}
+.tour{display:grid;grid-template-columns:5.5em minmax(0,1fr);align-items:center;gap:12px}
+.tour b{font-weight:800}
+.pills{display:flex;flex-wrap:wrap;gap:6px}
+.pill{padding:6px 12px;border-radius:999px;color:#fff;font-weight:600;font-size:14px;white-space:nowrap}
+.u{background:var(--blue)}.a{background:var(--red)}.new{outline:3px solid var(--amber);outline-offset:2px}
+.steps{list-style:none;margin:20px 0 0;padding:0;position:relative}
+.steps::before{content:"";position:absolute;left:13px;top:14px;bottom:14px;width:8px;background:var(--amber);border-radius:4px}
+.steps li{position:relative;padding:0 0 22px 48px}
+.steps li::before{content:"";position:absolute;left:4px;top:3px;width:26px;height:26px;border-radius:50%;background:var(--bg);border:5px solid var(--amber)}
+.steps li.fork::before{border-color:var(--ink)}
+.steps b{display:block;font-size:17px}
+.steps span{color:var(--mute);font-size:15px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:clamp(28px,5vw,64px)}
+footer{color:var(--mute);font-size:14px;border-top:1px solid var(--rule)}
+</style>
+</head>
+<body>
+
+<header class="band">
+<div class="wrap">
+  <h1>Le trajet d'un message dans ton chatbot</h1>
+  <p class="lead">Chaque fois que tu écris, ton message fait le tour de cette ligne. Claude ne retient rien : c'est ton programme qui lui renvoie toute la conversation à chaque passage.</p>
+
+  <figure class="scroll">
+    <svg viewBox="0 0 1060 440" role="img" aria-label="Plan en forme de métro : ton message part de toi, passe par app.py et l'historique, est envoyé à l'API avec la clé, arrive chez Claude, puis la réponse revient en streaming, est ajoutée à l'historique et sauvegardée.">
+      <!-- ligne verte : la clé API -->
+      <line x1="620" y1="34" x2="620" y2="120" stroke="#00a05a" stroke-width="10" stroke-linecap="round"/>
+      <!-- ligne bleue : l'aller -->
+      <polyline points="80,120 750,120 860,230" fill="none" stroke="#0a5cff" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+      <!-- ligne rouge : le retour -->
+      <polyline points="860,230 750,340 80,340" fill="none" stroke="#e6261f" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+      <!-- retour au départ : message suivant -->
+      <line x1="80" y1="326" x2="80" y2="134" stroke="currentColor" stroke-width="3" stroke-dasharray="6 7" opacity=".55"/>
+      <text x="96" y="235" font-size="13" fill="currentColor" opacity=".7">message suivant</text>
+      <!-- ligne ambre : la boucle des outils -->
+      <path d="M860,230 L925,165 L985,165 L985,295 L925,295 Z" fill="none" stroke="#ffb400" stroke-width="10" stroke-linejoin="round"/>
+
+      <!-- le voyageur -->
+      <circle class="voyageur" r="7" fill="currentColor"/>
+
+      <!-- stations aller -->
+      <g font-family="Figtree,system-ui,sans-serif" fill="currentColor" text-anchor="middle">
+        <circle class="st" cx="80" cy="120" r="14" stroke="currentColor" stroke-width="5"/>
+        <text x="80" y="82" font-size="15" font-weight="800">Toi</text>
+        <text x="80" y="64" font-size="12" opacity=".7">tu écris</text>
+
+        <circle class="st" cx="260" cy="120" r="10" stroke="#0a5cff" stroke-width="5"/>
+        <text x="260" y="82" font-size="15" font-weight="800">app.py</text>
+        <text x="260" y="64" font-size="12" opacity=".7">st.chat_input</text>
+
+        <circle class="st" cx="440" cy="120" r="10" stroke="#0a5cff" stroke-width="5"/>
+        <text x="440" y="82" font-size="15" font-weight="800">Historique</text>
+        <text x="440" y="64" font-size="12" opacity=".7">+ ta question</text>
+
+        <circle class="st" cx="620" cy="120" r="14" stroke="currentColor" stroke-width="5"/>
+        <text x="560" y="160" font-size="15" font-weight="800" text-anchor="end">Envoi à l'API</text>
+        <text x="560" y="178" font-size="12" opacity=".7" text-anchor="end">clé + system + historique + outils</text>
+
+        <circle class="st" cx="620" cy="34" r="10" stroke="#00a05a" stroke-width="5"/>
+        <text x="640" y="30" font-size="15" font-weight="800" text-anchor="start">Clé API</text>
+        <text x="640" y="47" font-size="12" opacity=".7" text-anchor="start">variable Windows</text>
+
+        <circle class="st" cx="860" cy="230" r="18" stroke="currentColor" stroke-width="6"/>
+        <text x="830" y="226" font-size="17" font-weight="800" text-anchor="end">Claude</text>
+        <text x="830" y="244" font-size="12" opacity=".7" text-anchor="end">ne retient rien</text>
+
+        <text x="985" y="150" font-size="15" font-weight="800">Outils</text>
+        <text x="985" y="320" font-size="12" opacity=".7">heure · calcul · dé</text>
+        <circle class="st" cx="985" cy="230" r="10" stroke="#ffb400" stroke-width="5"/>
+
+        <!-- stations retour -->
+        <circle class="st" cx="620" cy="340" r="10" stroke="#e6261f" stroke-width="5"/>
+        <text x="620" y="380" font-size="15" font-weight="800">Streaming</text>
+        <text x="620" y="398" font-size="12" opacity=".7">s'affiche morceau par morceau</text>
+
+        <circle class="st" cx="440" cy="340" r="10" stroke="#e6261f" stroke-width="5"/>
+        <text x="440" y="380" font-size="15" font-weight="800">Historique</text>
+        <text x="440" y="398" font-size="12" opacity=".7">+ sa réponse</text>
+
+        <circle class="st" cx="260" cy="340" r="10" stroke="#e6261f" stroke-width="5"/>
+        <text x="260" y="380" font-size="15" font-weight="800">Sauvegarde</text>
+        <text x="260" y="398" font-size="12" opacity=".7">conversations/*.json</text>
+
+        <circle class="st" cx="80" cy="340" r="14" stroke="currentColor" stroke-width="5"/>
+        <text x="80" y="380" font-size="15" font-weight="800">Toi</text>
+        <text x="80" y="398" font-size="12" opacity=".7">tu lis</text>
+      </g>
+    </svg>
+    <figcaption>Un tour de ligne = un message. Les stations entourées de noir sont les correspondances : là où deux lignes se croisent.</figcaption>
+  </figure>
+</div>
+</header>
+
+<section class="band alt">
+<div class="wrap">
+  <h2>Les quatre lignes</h2>
+  <div class="lines">
+    <div class="line" style="--c:var(--blue)">
+      <h3>Bleue : l'aller</h3>
+      <p>Ton message est ajouté à l'historique, puis tout l'historique part chez Claude.</p>
+      <code>historique.append({"role": "user", ...})</code>
+    </div>
+    <div class="line" style="--c:var(--green)">
+      <h3>Verte : la clé</h3>
+      <p>Elle vient de Windows et prouve à Anthropic que c'est ton compte qui paie. Elle n'est écrite dans aucun fichier.</p>
+      <code>ANTHROPIC_API_KEY</code>
+    </div>
+    <div class="line" style="--c:var(--amber)">
+      <h3>Ambre : les outils</h3>
+      <p>Si Claude a besoin de l'heure ou d'un calcul exact, il fait un détour : ton code Python répond, puis il reprend.</p>
+      <code>stop_reason == "tool_use"</code>
+    </div>
+    <div class="line" style="--c:var(--red)">
+      <h3>Rouge : le retour</h3>
+      <p>La réponse s'affiche pendant qu'elle s'écrit, puis elle rejoint l'historique et le fichier de sauvegarde.</p>
+      <code>st.write_stream(...)</code>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="band">
+<div class="wrap two">
+  <div>
+    <h2>Pourquoi Claude « se souvient »</h2>
+    <p>À chaque tour, on lui renvoie toute la liste. Elle grandit de deux messages : ta question, puis sa réponse.</p>
+    <div class="tours">
+      <div class="tour"><b>Tour 1</b><div class="pills"><span class="pill u new">toi ₁</span></div></div>
+      <div class="tour"><b>Tour 2</b><div class="pills"><span class="pill u">toi ₁</span><span class="pill a">claude ₁</span><span class="pill u new">toi ₂</span></div></div>
+      <div class="tour"><b>Tour 3</b><div class="pills"><span class="pill u">toi ₁</span><span class="pill a">claude ₁</span><span class="pill u">toi ₂</span><span class="pill a">claude ₂</span><span class="pill u new">toi ₃</span></div></div>
+    </div>
+    <p style="margin-top:14px;font-size:14px;color:var(--mute)">Entouré en jaune : le nouveau message de ce tour.</p>
+  </div>
+  <div>
+    <h2>Le détour par les outils</h2>
+    <p>Une petite boucle <code>while True</code> dans <code>repondre()</code>.</p>
+    <ol class="steps">
+      <li><b>Claude répond</b><span>avec le texte, ou une demande d'outil</span></li>
+      <li class="fork"><b>Il demande un outil ?</b><span>non : c'est la réponse finale, on sort de la boucle</span></li>
+      <li><b>Ton code exécute la fonction</b><span>executer_outil("calculer", {...})</span></li>
+      <li><b>On renvoie le résultat à Claude</b><span>un message « tool_result », puis on revient en haut</span></li>
+    </ol>
+  </div>
+</div>
+</section>
+
+<footer class="band">
+<div class="wrap">
+  Ton chatbot : <code>app.py</code> · pour le lancer : <code>python -m streamlit run app.py</code>
+</div>
+</footer>
+
+</body>
+</html>
