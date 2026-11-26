@@ -2,6 +2,7 @@
 conversations/
 conversation.json
 conversation.json.bak
+reglages.json
 
 # Tes secrets (clé API, mot de passe) : JAMAIS sur GitHub
 .streamlit/secrets.toml

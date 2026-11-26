@@ -91,6 +91,11 @@ def injecter_style(p):
 .conso-gros {{ font-size: 26px; font-weight: 800; color: {p["couleur"]}; line-height: 1.2; }}
 .conso-sep {{ border-top: 1px solid #f0e8ec; margin: 10px 0; }}
 .conso-note {{ font-size: 12px; color: #9a8f95; margin-top: 8px; }}
+
+/* La jauge du budget */
+.jauge {{ height: 14px; background: #f0e8ec; border-radius: 999px; overflow: hidden; margin: 8px 0 6px; }}
+.jauge-rempli {{ height: 100%; border-radius: 999px; min-width: 6px; }}
+.jauge-alerte {{ font-size: 13px; font-weight: 800; color: #e03131; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -158,8 +163,41 @@ def fmt_cout(c):
     return f"{c:.4f}".replace(".", ",") + " $"
 
 
+FICHIER_REGLAGES = "reglages.json"
+
+
+def charger_budget():
+    if os.path.exists(FICHIER_REGLAGES):
+        with open(FICHIER_REGLAGES, "r", encoding="utf-8") as f:
+            return json.load(f).get("budget", 5.0)
+    return 5.0
+
+
+def sauvegarder_budget(budget):
+    with open(FICHIER_REGLAGES, "w", encoding="utf-8") as f:
+        json.dump({"budget": budget}, f)
+
+
+def jauge(depense, budget):
+    """Renvoie le HTML d'une barre qui se remplit selon la part du budget déjà dépensée."""
+    pourcent = depense / budget * 100 if budget else 0
+    if pourcent < 60:
+        couleur = "#2f9e44"      # vert : tranquille
+    elif pourcent < 85:
+        couleur = "#f08c00"      # orange : attention
+    else:
+        couleur = "#e03131"      # rouge : presque au bout
+    largeur = min(pourcent, 100)
+    alerte = '<div class="jauge-alerte">⚠️ Budget dépassé</div>' if pourcent >= 100 else ""
+    return f"""
+  <div class="jauge"><div class="jauge-rempli" style="width:{largeur}%; background:{couleur}"></div></div>
+  <div class="conso-ligne"><span>{fmt_cout(depense)} sur {fmt_cout(budget)}</span><span><b>{pourcent:.1f} %</b></span></div>
+  {alerte}"""
+
+
 def afficher_conso(zone, conv):
     """Remplit la carte de consommation de la barre latérale."""
+    budget = st.session_state.get("budget", 5.0)
     u_conv = conv.get("usage", usage_vide())
     u_tout = usage_vide()
     for c in lister_conversations():
@@ -177,6 +215,7 @@ def afficher_conso(zone, conv):
   <div class="conso-sep"></div>
   <div class="conso-ligne"><span>Toutes les conversations</span><span>{fmt_tokens(nb_tokens(u_tout))} tokens</span></div>
   <div class="conso-gros" style="font-size:20px">{fmt_cout(cout(u_tout))}</div>
+  {jauge(cout(u_tout), budget)}
   <div class="conso-note">Estimation d'après les prix de {MODELE}. Le montant exact est dans la console Anthropic.</div>
 </div>
 """, unsafe_allow_html=True)
@@ -383,6 +422,12 @@ with st.sidebar:
 
     st.subheader("🪙 Consommation")
     zone_conso = st.empty()
+
+    if "budget" not in st.session_state:
+        st.session_state.budget = charger_budget()
+    budget = st.number_input("🎯 Mon budget ($)", min_value=0.5, step=0.5, key="budget")
+    if budget != charger_budget():
+        sauvegarder_budget(budget)
 
     st.subheader("💬 Conversations")
     if st.button("➕ Nouvelle conversation"):
