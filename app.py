@@ -13,22 +13,90 @@ st.set_page_config(page_title="Mon chatbot", page_icon="💌")
 MODELE = "claude-opus-5-5"
 DOSSIER = "conversations"          # un fichier .json par conversation
 
-
-# =====================================================================
-# 1. LES PERSONNALITÉS (choisies dans le menu sur le côté)
-# =====================================================================
-PERSONNALITES = {
-    "💌 Amoureux": "Tu es follement amoureux de la personne avec qui tu parles. Tu es tendre, attentionné, un peu poète, tu lui fais des compliments et tu t'intéresses à tout ce qu'elle te raconte. Tu restes toujours respectueux et bienveillant.",
-    "🎓 Prof patient": "Tu es un professeur patient et pédagogue. Tu expliques simplement, avec des exemples concrets, et tu vérifies que ton élève a bien compris.",
-    "🏴‍☠️ Pirate": "Tu es un vieux pirate des Caraïbes. Tu parles comme un pirate, tu racontes tes aventures en mer et tu appelles ton interlocuteur 'moussaillon'.",
-    "🤖 Assistant normal": "Tu es un assistant utile, clair et concis.",
+# Prix de claude-opus-5-5, en dollars pour 1 million de tokens
+PRIX = {
+    "input": 4.00,         # ce que tu envoies (historique, consigne, images...)
+    "output": 20.00,       # ce que Claude écrit (réflexion comprise)
+    "cache_read": 0.20,    # partie de l'historique relue depuis le cache (20x moins cher)
+    "cache_write": 5.00,   # mise en cache d'un nouveau morceau d'historique
 }
 
 
 # =====================================================================
+# 1. LES PERSONNALITÉS : consigne + couleurs de la page
+# =====================================================================
+PERSONNALITES = {
+    "💌 Amoureux": {
+        "emoji": "💌", "nom": "Amoureux", "couleur": "#d6336c", "fonce": "#a61e4d", "fond": "#fff0f5",
+        "slogan": "Tendre, attentionné, un brin poète.",
+        "system": "Tu es follement amoureux de la personne avec qui tu parles. Tu es tendre, attentionné, un peu poète, tu lui fais des compliments et tu t'intéresses à tout ce qu'elle te raconte. Tu restes toujours respectueux et bienveillant.",
+    },
+    "🎓 Prof patient": {
+        "emoji": "🎓", "nom": "Prof patient", "couleur": "#1c7ed6", "fonce": "#1864ab", "fond": "#eef6ff",
+        "slogan": "Explique simplement, avec des exemples.",
+        "system": "Tu es un professeur patient et pédagogue. Tu expliques simplement, avec des exemples concrets, et tu vérifies que ton élève a bien compris.",
+    },
+    "🏴‍☠️ Pirate": {
+        "emoji": "🏴‍☠️", "nom": "Pirate", "couleur": "#e8590c", "fonce": "#a63f05", "fond": "#fff4e6",
+        "slogan": "Des histoires de mer, moussaillon !",
+        "system": "Tu es un vieux pirate des Caraïbes. Tu parles comme un pirate, tu racontes tes aventures en mer et tu appelles ton interlocuteur 'moussaillon'.",
+    },
+    "🤖 Assistant normal": {
+        "emoji": "🤖", "nom": "Assistant", "couleur": "#0ca678", "fonce": "#087f5b", "fond": "#ebfbf5",
+        "slogan": "Clair, utile et concis.",
+        "system": "Tu es un assistant utile, clair et concis.",
+    },
+}
+
+
+def injecter_style(p):
+    """Ajoute du CSS à la page, avec les couleurs de la personnalité choisie."""
+    st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&display=swap');
+.stApp, .stApp p, .stApp li, .stApp textarea, .stApp input {{ font-family: 'Nunito', sans-serif; }}
+#MainMenu, footer {{ visibility: hidden; }}
+
+/* Le bandeau en haut */
+.hero {{
+  display: flex; align-items: center; gap: 18px;
+  padding: 22px 26px; margin-bottom: 18px; border-radius: 22px;
+  background: linear-gradient(135deg, {p["couleur"]}, {p["fonce"]});
+  color: #fff; box-shadow: 0 10px 30px -12px {p["couleur"]};
+}}
+.hero-emoji {{ font-size: 46px; line-height: 1; }}
+.hero-nom {{ font-size: 28px; font-weight: 800; line-height: 1.1; }}
+.hero-slogan {{ opacity: .9; font-size: 16px; }}
+
+/* Les bulles de messages */
+[data-testid="stChatMessage"] {{
+  border-radius: 18px; padding: 14px 16px; margin-bottom: 10px;
+  background: #fff; border: 1px solid #eee5e9;
+}}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {{
+  background: {p["fond"]}; border-color: transparent;
+}}
+
+/* La barre latérale */
+[data-testid="stSidebar"] {{ background: {p["fond"]}; }}
+[data-testid="stSidebar"] .stButton button {{
+  width: 100%; justify-content: flex-start; text-align: left; border-radius: 12px;
+}}
+[data-testid="stBaseButton-primary"] {{ background: {p["couleur"]}; border-color: {p["couleur"]}; }}
+[data-testid="stBaseButton-primary"]:hover {{ background: {p["fonce"]}; border-color: {p["fonce"]}; }}
+
+/* La carte de consommation */
+.conso {{ background: #fff; border-radius: 16px; padding: 14px 16px; box-shadow: 0 2px 10px rgba(0,0,0,.05); }}
+.conso-ligne {{ display: flex; justify-content: space-between; gap: 8px; font-size: 14px; color: #6b5f65; }}
+.conso-gros {{ font-size: 26px; font-weight: 800; color: {p["couleur"]}; line-height: 1.2; }}
+.conso-sep {{ border-top: 1px solid #f0e8ec; margin: 10px 0; }}
+.conso-note {{ font-size: 12px; color: #9a8f95; margin-top: 8px; }}
+</style>
+""", unsafe_allow_html=True)
+
+
+# =====================================================================
 # 6. LA CLÉ API ET LE MOT DE PASSE (pour la mise en ligne)
-#    - sur ton PC : lus dans les variables d'environnement
-#    - en ligne (Streamlit Cloud) : lus dans les "secrets" du site
 # =====================================================================
 def lire_secret(nom):
     try:
@@ -39,14 +107,16 @@ def lire_secret(nom):
 
 mot_de_passe = lire_secret("MOT_DE_PASSE")
 if mot_de_passe and not st.session_state.get("connecte"):
-    st.title("🔒 Accès protégé")
+    injecter_style(PERSONNALITES["💌 Amoureux"])
+    st.markdown('<div class="hero"><div class="hero-emoji">🔒</div><div><div class="hero-nom">Accès protégé</div>'
+                '<div class="hero-slogan">Entre le mot de passe pour discuter.</div></div></div>', unsafe_allow_html=True)
     essai = st.text_input("Mot de passe", type="password")
     if essai == mot_de_passe:
         st.session_state.connecte = True
         st.rerun()
     elif essai:
         st.error("Mot de passe incorrect")
-    st.stop()                           # on n'affiche rien d'autre tant que ce n'est pas le bon
+    st.stop()
 
 cle = lire_secret("ANTHROPIC_API_KEY")
 if not cle:
@@ -54,6 +124,62 @@ if not cle:
     st.stop()
 
 client = anthropic.Anthropic(api_key=cle)
+
+
+# =====================================================================
+# 7. TOKENS ET COÛT
+# =====================================================================
+def usage_vide():
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+
+def ajouter_usage(total, usage_api):
+    """Ajoute les tokens d'une réponse de l'API (message.usage) à un compteur."""
+    total["input"] += usage_api.input_tokens or 0
+    total["output"] += usage_api.output_tokens or 0
+    total["cache_read"] += usage_api.cache_read_input_tokens or 0
+    total["cache_write"] += usage_api.cache_creation_input_tokens or 0
+
+
+def nb_tokens(u):
+    return sum(u.values())
+
+
+def cout(u):
+    """Coût en dollars : tokens x prix, divisé par 1 million."""
+    return sum(u[k] * PRIX[k] for k in PRIX) / 1_000_000
+
+
+def fmt_tokens(n):
+    return f"{n:,}".replace(",", " ")
+
+
+def fmt_cout(c):
+    return f"{c:.4f}".replace(".", ",") + " $"
+
+
+def afficher_conso(zone, conv):
+    """Remplit la carte de consommation de la barre latérale."""
+    u_conv = conv.get("usage", usage_vide())
+    u_tout = usage_vide()
+    for c in lister_conversations():
+        if c["id"] != conv["id"]:
+            for k in u_tout:
+                u_tout[k] += c.get("usage", {}).get(k, 0)
+    for k in u_tout:
+        u_tout[k] += u_conv[k]
+
+    zone.markdown(f"""
+<div class="conso">
+  <div class="conso-ligne"><span>Cette conversation</span><span>{fmt_tokens(nb_tokens(u_conv))} tokens</span></div>
+  <div class="conso-gros">{fmt_cout(cout(u_conv))}</div>
+  <div class="conso-ligne"><span>↑ envoyés {fmt_tokens(u_conv["input"] + u_conv["cache_read"] + u_conv["cache_write"])}</span><span>↓ écrits {fmt_tokens(u_conv["output"])}</span></div>
+  <div class="conso-sep"></div>
+  <div class="conso-ligne"><span>Toutes les conversations</span><span>{fmt_tokens(nb_tokens(u_tout))} tokens</span></div>
+  <div class="conso-gros" style="font-size:20px">{fmt_cout(cout(u_tout))}</div>
+  <div class="conso-note">Estimation d'après les prix de {MODELE}. Le montant exact est dans la console Anthropic.</div>
+</div>
+""", unsafe_allow_html=True)
 
 
 # =====================================================================
@@ -70,6 +196,7 @@ def nouvelle_conversation(personnalite="💌 Amoureux"):
         "date": datetime.now().isoformat(),
         "personnalite": personnalite,
         "messages": [],
+        "usage": usage_vide(),
     }
 
 
@@ -167,24 +294,25 @@ def executer_outil(nom, entree):
 
 
 # =====================================================================
-# LA RÉPONSE DE CLAUDE (streaming + outils)
+# LA RÉPONSE DE CLAUDE (streaming + outils + comptage des tokens)
 # =====================================================================
-def repondre(conv):
-    # Copie de l'historique : les échanges avec les outils servent pour cette réponse,
-    # mais on ne sauvegarde que le texte final.
-    messages = list(conv["messages"])
-    systeme = PERSONNALITES.get(conv["personnalite"], PERSONNALITES["🤖 Assistant normal"])
+def repondre(conv, zone_conso):
+    # On n'envoie que "role" et "content" (pas nos infos de tokens, que l'API refuserait)
+    messages = [{"role": m["role"], "content": m["content"]} for m in conv["messages"]]
+    perso = PERSONNALITES.get(conv["personnalite"], PERSONNALITES["🤖 Assistant normal"])
     textes = []
+    usage_message = usage_vide()      # les tokens de CETTE réponse (parfois plusieurs appels avec les outils)
 
     while True:   # on boucle tant que Claude veut utiliser des outils
         zone = st.empty()
         texte = ""
         with client.messages.stream(
             model=MODELE,
-            max_tokens=2048,
-            system=systeme,
+            max_tokens=16000,
+            system=perso["system"],
             messages=messages,
             tools=OUTILS,
+            cache_control={"type": "ephemeral"},   # met l'historique en cache : les tours suivants coûtent moins cher
         ) as stream:
             for morceau in stream.text_stream:
                 texte += morceau
@@ -194,6 +322,14 @@ def repondre(conv):
         if texte:
             textes.append(texte)
 
+        # 7. On compte les tokens de cet appel, et on met la carte à jour tout de suite
+        ajouter_usage(usage_message, message.usage)
+        ajouter_usage(conv["usage"], message.usage)
+        afficher_conso(zone_conso, conv)
+
+        if message.stop_reason == "refusal":
+            textes.append("_(Claude a préféré ne pas répondre à ce message.)_")
+            break
         if message.stop_reason != "tool_use":       # Claude a fini : pas d'outil demandé
             break
 
@@ -207,7 +343,7 @@ def repondre(conv):
                 resultats.append({"type": "tool_result", "tool_use_id": bloc.id, "content": resultat})
         messages.append({"role": "user", "content": resultats})
 
-    return "\n\n".join(textes) or "(pas de réponse)"
+    return "\n\n".join(textes) or "(pas de réponse)", usage_message
 
 
 def afficher_contenu(contenu):
@@ -222,6 +358,10 @@ def afficher_contenu(contenu):
             st.image(base64.b64decode(bloc["source"]["data"]), width=250)
 
 
+def legende_usage(u):
+    st.caption(f"🪙 {fmt_tokens(nb_tokens(u))} tokens · {fmt_cout(cout(u))}")
+
+
 # =====================================================================
 # LA PAGE
 # =====================================================================
@@ -229,22 +369,10 @@ if "conv" not in st.session_state:
     convs = lister_conversations()
     st.session_state.conv = convs[0] if convs else nouvelle_conversation()
 conv = st.session_state.conv
+conv.setdefault("usage", usage_vide())          # les anciennes conversations n'avaient pas de compteur
 
 # ---------- Barre latérale ----------
 with st.sidebar:
-    st.header("💬 Conversations")
-    if st.button("➕ Nouvelle conversation"):
-        st.session_state.conv = nouvelle_conversation(conv["personnalite"])
-        st.rerun()
-
-    for c in lister_conversations():
-        prefixe = "👉 " if c["id"] == conv["id"] else ""
-        if st.button(prefixe + c["titre"], key="conv-" + c["id"]):
-            st.session_state.conv = c
-            st.rerun()
-
-    st.divider()
-
     noms = list(PERSONNALITES)
     index = noms.index(conv["personnalite"]) if conv["personnalite"] in noms else 0
     choix = st.selectbox("🎭 Personnalité", noms, index=index, key="perso-" + conv["id"])
@@ -253,21 +381,50 @@ with st.sidebar:
         if conv["messages"]:
             sauvegarder(conv)
 
+    st.subheader("🪙 Consommation")
+    zone_conso = st.empty()
+
+    st.subheader("💬 Conversations")
+    if st.button("➕ Nouvelle conversation"):
+        st.session_state.conv = nouvelle_conversation(conv["personnalite"])
+        st.rerun()
+
+    for c in lister_conversations():
+        actuelle = c["id"] == conv["id"]
+        if st.button(c["titre"], key="conv-" + c["id"], type="primary" if actuelle else "secondary"):
+            st.session_state.conv = c
+            st.rerun()
+
     if st.button("🗑️ Supprimer cette conversation"):
         supprimer(conv)
         st.session_state.conv = nouvelle_conversation(conv["personnalite"])
         st.rerun()
 
+perso = PERSONNALITES.get(conv["personnalite"], PERSONNALITES["🤖 Assistant normal"])
+injecter_style(perso)
+afficher_conso(zone_conso, conv)
+
 # ---------- Zone principale ----------
-st.title(conv["personnalite"].split(" ", 1)[0] + " Mon chatbot")
+st.markdown(f"""
+<div class="hero">
+  <div class="hero-emoji">{perso["emoji"]}</div>
+  <div><div class="hero-nom">{perso["nom"]}</div><div class="hero-slogan">{perso["slogan"]}</div></div>
+</div>
+""", unsafe_allow_html=True)
+
+if not conv["messages"]:
+    st.caption("Écris ton premier message en bas de la page. Tu peux aussi joindre une image 📎")
 
 for msg in conv["messages"]:
-    with st.chat_message(msg["role"]):
+    avatar = perso["emoji"] if msg["role"] == "assistant" else None
+    with st.chat_message(msg["role"], avatar=avatar):
         afficher_contenu(msg["content"])
+        if "usage" in msg:
+            legende_usage(msg["usage"])
 
 # 4. accept_file : on peut joindre des images au message
 saisie = st.chat_input(
-    "Écris ton message (tu peux joindre des images)...",
+    "Écris ton message...",
     accept_file="multiple",
     file_type=["png", "jpg", "jpeg", "gif", "webp"],
 )
@@ -294,10 +451,10 @@ if saisie and (saisie.text or saisie.files):
     with st.chat_message("user"):
         afficher_contenu(contenu)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=perso["emoji"]):
         # 2. GESTION DES ERREURS : on "essaie" (try), et si ça rate on affiche un message clair (except)
         try:
-            reponse = repondre(conv)
+            reponse, usage_message = repondre(conv, zone_conso)
         except anthropic.AuthenticationError:
             st.error("🔑 La clé API est refusée. Vérifie qu'elle est correcte et qu'elle n'a pas expiré.")
             conv["messages"].pop()              # on retire ta question, pour pouvoir la renvoyer
@@ -311,6 +468,7 @@ if saisie and (saisie.text or saisie.files):
             st.error(f"⚠️ Erreur de l'API ({e.status_code}) : {e.message}")
             conv["messages"].pop()
         else:                                   # pas d'erreur : on enregistre la réponse
-            conv["messages"].append({"role": "assistant", "content": reponse})
+            legende_usage(usage_message)
+            conv["messages"].append({"role": "assistant", "content": reponse, "usage": usage_message})
             sauvegarder(conv)
             st.rerun()                          # pour mettre à jour la liste des conversations
