@@ -14,16 +14,30 @@ import streamlit as st
 
 st.set_page_config(page_title="Mon chatbot", page_icon="💌")
 
-MODELE = "claude-opus-5-5"
 DOSSIER = "conversations"          # un fichier .json par conversation
 
-# Prix de claude-opus-5-5, en dollars pour 1 million de tokens
-PRIX = {
-    "input": 4.00,         # ce que tu envoies (historique, consigne, images...)
-    "output": 20.00,       # ce que Claude écrit (réflexion comprise)
-    "cache_read": 0.20,    # partie de l'historique relue depuis le cache (20x moins cher)
-    "cache_write": 5.00,   # mise en cache d'un nouveau morceau d'historique
+# =====================================================================
+# 10. LES MODÈLES : du plus intelligent au moins cher
+#     Prix en dollars pour 1 million de tokens :
+#     input = ce que tu envoies (historique, consigne, images...), output = ce que Claude écrit (réflexion comprise),
+#     cache_read = historique relu depuis le cache, cache_write = mise en cache d'un nouveau morceau
+# =====================================================================
+MODELES = {
+    "claude-opus-5-5": {
+        "nom": "Opus 5.5", "description": "Le plus intelligent",
+        "prix": {"input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00},
+    },
+    "claude-sonnet-5-5": {
+        "nom": "Sonnet 5.5", "description": "Très bon et rapide · 2× moins cher",
+        "prix": {"input": 2.00, "output": 10.00, "cache_read": 0.10, "cache_write": 2.50},
+    },
+    "claude-haiku-5-5": {
+        "nom": "Haiku 5.5", "description": "Ultra rapide · 40× moins cher",
+        # (prix valables pour des messages de moins de 100 000 tokens ; cache estimé avec la règle 0,1× / 1,25×)
+        "prix": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+    },
 }
+MODELE_DEFAUT = "claude-opus-5-5"
 
 
 # =====================================================================
@@ -135,25 +149,41 @@ client = anthropic.Anthropic(api_key=cle)
 # =====================================================================
 # 7. TOKENS ET COÛT
 # =====================================================================
+TYPES_TOKENS = ("input", "output", "cache_read", "cache_write")
+
+
 def usage_vide():
-    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cout": 0.0}
 
 
-def ajouter_usage(total, usage_api):
-    """Ajoute les tokens d'une réponse de l'API (message.usage) à un compteur."""
-    total["input"] += usage_api.input_tokens or 0
-    total["output"] += usage_api.output_tokens or 0
-    total["cache_read"] += usage_api.cache_read_input_tokens or 0
-    total["cache_write"] += usage_api.cache_creation_input_tokens or 0
-
-
-def nb_tokens(u):
-    return sum(u.values())
+def cout_selon(u, prix):
+    """Coût en dollars : tokens x prix, divisé par 1 million."""
+    return sum(u.get(k, 0) * prix[k] for k in TYPES_TOKENS) / 1_000_000
 
 
 def cout(u):
-    """Coût en dollars : tokens x prix, divisé par 1 million."""
-    return sum(u[k] * PRIX[k] for k in PRIX) / 1_000_000
+    """Le coût déjà calculé. Les anciens compteurs (d'avant le choix du modèle) n'en ont pas : on prend les prix d'Opus."""
+    return u["cout"] if "cout" in u else cout_selon(u, MODELES[MODELE_DEFAUT]["prix"])
+
+
+def ajouter_usage(total, usage_api, modele):
+    """Ajoute les tokens d'une réponse de l'API (message.usage) à un compteur, et leur coût selon le modèle utilisé.
+    Le coût est calculé tout de suite, car chaque modèle a ses propres prix."""
+    if "cout" not in total:
+        total["cout"] = cout(total)
+    appel = {
+        "input": usage_api.input_tokens or 0,
+        "output": usage_api.output_tokens or 0,
+        "cache_read": usage_api.cache_read_input_tokens or 0,
+        "cache_write": usage_api.cache_creation_input_tokens or 0,
+    }
+    for k in TYPES_TOKENS:
+        total[k] = total.get(k, 0) + appel[k]
+    total["cout"] += cout_selon(appel, MODELES[modele]["prix"])
+
+
+def nb_tokens(u):
+    return sum(u.get(k, 0) for k in TYPES_TOKENS)
 
 
 def fmt_tokens(n):
@@ -213,10 +243,10 @@ def ecrire_reglage(cle, valeur):
         st.toast(f"⚠️ Impossible d'enregistrer le compteur : {e}")
 
 
-def ajouter_au_total(usage_api):
+def ajouter_au_total(usage_api, modele):
     """Relit le total enregistré, y ajoute les tokens de cet appel, et le réenregistre."""
     total = lire_reglage("total", usage_vide())
-    ajouter_usage(total, usage_api)
+    ajouter_usage(total, usage_api, modele)
     ecrire_reglage("total", total)
     st.session_state.total = total
 
@@ -238,7 +268,7 @@ def afficher_conso(zone, conv):
     alerte = '<div class="jauge-alerte">⚠️ Budget dépassé</div>' if pourcent >= 100 else ""
 
     zone.markdown(f"""
-<div class="conso" title="Estimation d'après les prix de {MODELE}. Le montant exact est dans la console Anthropic.">
+<div class="conso" title="Estimation d'après les prix publiés des modèles. Le montant exact est dans la console Anthropic.">
   <div class="conso-ligne"><span class="conso-gros">🪙 {fmt_cout(depense)}</span><span>sur {budget:.2f} $ · <b>{pourcent:.1f} %</b></span></div>
   <div class="jauge"><div class="jauge-rempli" style="width:{min(pourcent, 100)}%; background:{couleur}"></div></div>
   <div class="conso-petit">Cette conversation : {fmt_cout(cout(u_conv))} · {fmt_tokens(nb_tokens(u_conv))} tokens</div>
@@ -556,6 +586,7 @@ def repondre(conv, zone_conso):
     # On n'envoie que "role" et "content" (pas nos infos de tokens, que l'API refuserait)
     messages = [{"role": m["role"], "content": m["content"]} for m in conv["messages"]]
     perso = PERSONNALITES.get(conv["personnalite"], PERSONNALITES["🤖 Assistant normal"])
+    modele = conv.get("modele", MODELE_DEFAUT)
     textes = []
     usage_message = usage_vide()      # les tokens de CETTE réponse (parfois plusieurs appels avec les outils)
 
@@ -570,7 +601,7 @@ def repondre(conv, zone_conso):
         zone = st.empty()
         texte = ""
         with client.messages.stream(
-            model=MODELE,
+            model=modele,                           # 10. le modèle choisi dans la barre latérale
             max_tokens=16000,
             system=systeme,
             messages=messages,
@@ -586,9 +617,9 @@ def repondre(conv, zone_conso):
             textes.append(texte)
 
         # 7. On compte les tokens de cet appel, et on met la carte à jour tout de suite
-        ajouter_usage(usage_message, message.usage)
-        ajouter_usage(conv["usage"], message.usage)
-        ajouter_au_total(message.usage)
+        ajouter_usage(usage_message, message.usage, modele)
+        ajouter_usage(conv["usage"], message.usage, modele)
+        ajouter_au_total(message.usage, modele)
         afficher_conso(zone_conso, conv)
 
         if message.stop_reason == "refusal":
@@ -626,8 +657,9 @@ def afficher_contenu(contenu):
             st.image(base64.b64decode(bloc["source"]["data"]), width=250)
 
 
-def legende_usage(u):
-    st.caption(f"🪙 {fmt_tokens(nb_tokens(u))} tokens · {fmt_cout(cout(u))}")
+def legende_usage(u, modele=None):
+    nom = f" · {MODELES[modele]['nom']}" if modele in MODELES else ""
+    st.caption(f"🪙 {fmt_tokens(nb_tokens(u))} tokens · {fmt_cout(cout(u))}{nom}")
 
 
 # =====================================================================
@@ -645,8 +677,10 @@ if "total" not in st.session_state:
     if total is None:                           # première fois : on repart de la somme des conversations
         total = usage_vide()
         for c in lister_conversations():
-            for k in total:
-                total[k] += c.get("usage", {}).get(k, 0)
+            u = c.get("usage", {})
+            for k in TYPES_TOKENS:
+                total[k] += u.get(k, 0)
+            total["cout"] += cout(u) if u else 0
         ecrire_reglage("total", total)
     st.session_state.total = total
 if "budget" not in st.session_state:
@@ -660,6 +694,18 @@ with st.sidebar:
     choix = st.selectbox("🎭 Personnalité", noms, index=index, key="perso-" + conv["id"])
     if choix != conv["personnalite"]:
         conv["personnalite"] = choix
+        if conv["messages"]:
+            sauvegarder(conv)
+
+    # 10. Le choix du modèle (gardé dans la conversation)
+    ids = list(MODELES)
+    actuel = conv.get("modele", MODELE_DEFAUT)
+    modele_choisi = st.selectbox(
+        "🧠 Modèle", ids, index=ids.index(actuel) if actuel in ids else 0, key="modele-" + conv["id"],
+        format_func=lambda m: f"{MODELES[m]['nom']} — {MODELES[m]['description']}",
+    )
+    if modele_choisi != actuel:
+        conv["modele"] = modele_choisi
         if conv["messages"]:
             sauvegarder(conv)
 
@@ -694,6 +740,7 @@ with st.sidebar:
     st.subheader("💬 Conversations")
     if st.button("➕ Nouvelle conversation"):
         st.session_state.conv = nouvelle_conversation(conv["personnalite"])
+        st.session_state.conv["modele"] = conv.get("modele", MODELE_DEFAUT)   # on garde le même modèle
         st.rerun()
 
     for c in lister_conversations():
@@ -727,7 +774,7 @@ for msg in conv["messages"]:
     with st.chat_message(msg["role"], avatar=avatar):
         afficher_contenu(msg["content"])
         if "usage" in msg:
-            legende_usage(msg["usage"])
+            legende_usage(msg["usage"], msg.get("modele"))
 
 # 4. accept_file : on peut joindre des images au message
 saisie = st.chat_input(
@@ -775,7 +822,8 @@ if saisie and (saisie.text or saisie.files):
             st.error(f"⚠️ Erreur de l'API ({e.status_code}) : {e.message}")
             conv["messages"].pop()
         else:                                   # pas d'erreur : on enregistre la réponse
-            legende_usage(usage_message)
-            conv["messages"].append({"role": "assistant", "content": reponse, "usage": usage_message})
+            modele = conv.get("modele", MODELE_DEFAUT)
+            legende_usage(usage_message, modele)
+            conv["messages"].append({"role": "assistant", "content": reponse, "usage": usage_message, "modele": modele})
             sauvegarder(conv)
             st.rerun()                          # pour mettre à jour la liste des conversations
