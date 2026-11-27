@@ -1,8 +1,12 @@
 import base64
 import json
+import math
 import os
 import random
+import re
+import unicodedata
 import uuid
+from collections import Counter
 from datetime import datetime
 
 import anthropic
@@ -329,8 +333,130 @@ OUTILS = [
 ]
 
 
+# =====================================================================
+# 9. LE RAG : faire répondre Claude à partir de TES documents
+#    Étape 1 : lire les fichiers du dossier documents/
+#    Étape 2 : les découper en petits passages
+#    Étape 3 : quand Claude cherche, trouver les passages qui contiennent les mêmes mots
+#    Étape 4 : les lui donner, il répond en s'appuyant dessus et cite la source
+# =====================================================================
+DOSSIER_DOCS = "documents"
+EXTENSIONS = (".pdf", ".txt", ".md")
+
+# Petits mots trop fréquents pour aider à trouver quelque chose
+MOTS_VIDES = set("""le la les un une des de du et en au aux ce cet cette ces dans est sont il elle on
+pour par pas plus que qui quoi sur se sa son ses ou mais avec comme tout tous nous vous ils elles leur
+leurs ne lui me te je tu mon ma mes ton ta tes est-ce quel quelle quels quelles comment combien""".split())
+
+
+def mots(texte):
+    """Transforme un texte en liste de mots simples : minuscules, sans accents, sans petits mots."""
+    texte = unicodedata.normalize("NFD", texte.lower())
+    texte = "".join(c for c in texte if unicodedata.category(c) != "Mn")   # retire les accents
+    return [m for m in re.findall(r"[a-z0-9]+", texte) if len(m) > 1 and m not in MOTS_VIDES]
+
+
+def lire_fichier(chemin_fichier):
+    """Étape 1 : récupère le texte d'un fichier PDF, TXT ou MD."""
+    if chemin_fichier.lower().endswith(".pdf"):
+        from pypdf import PdfReader
+        return "\n".join(page.extract_text() or "" for page in PdfReader(chemin_fichier).pages)
+    with open(chemin_fichier, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+def decouper(texte, taille=1000, chevauchement=200):
+    """Étape 2 : coupe le texte en passages d'environ 1000 caractères.
+    Les passages se chevauchent un peu, pour ne pas couper une idée en deux."""
+    texte = texte.strip()
+    passages, debut = [], 0
+    while debut < len(texte):
+        fin = min(debut + taille, len(texte))
+        if fin < len(texte):                     # on essaie de couper à la fin d'une ligne ou d'une phrase
+            coupure = max(texte.rfind("\n", debut, fin), texte.rfind(". ", debut, fin))
+            if coupure > debut + taille // 2:
+                fin = coupure + 1
+        passages.append(texte[debut:fin].strip())
+        if fin >= len(texte):
+            break
+        debut = max(fin - chevauchement, debut + 1)
+    return [p for p in passages if p]
+
+
+def signature_documents():
+    """La liste des fichiers avec leur date de modification (sert à savoir si quelque chose a changé)."""
+    os.makedirs(DOSSIER_DOCS, exist_ok=True)
+    return tuple(sorted(
+        (nom, os.path.getmtime(os.path.join(DOSSIER_DOCS, nom)))
+        for nom in os.listdir(DOSSIER_DOCS) if nom.lower().endswith(EXTENSIONS)
+    ))
+
+
+@st.cache_data   # Streamlit garde le résultat en mémoire : on ne relit les fichiers que s'ils changent
+def construire_index(signature):
+    passages = []
+    for nom, _ in signature:
+        for numero, texte in enumerate(decouper(lire_fichier(os.path.join(DOSSIER_DOCS, nom))), 1):
+            passages.append({"source": nom, "numero": numero, "texte": texte, "mots": mots(texte)})
+    return passages
+
+
+def chercher(requete, passages, nb_resultats=4):
+    """Étape 3 : donne une note à chaque passage (méthode BM25) et renvoie les meilleurs.
+    Un passage gagne des points s'il contient les mots de la recherche, surtout les mots RARES
+    (un mot présent partout, comme "chatbot", compte moins qu'un mot précis, comme "supabase")."""
+    mots_requete = mots(requete)
+    if not mots_requete or not passages:
+        return []
+    nb_passages = len(passages)
+    longueur_moyenne = sum(len(p["mots"]) for p in passages) / nb_passages
+    nb_passages_avec = Counter(m for p in passages for m in set(p["mots"]))   # dans combien de passages est chaque mot
+    k1, b = 1.5, 0.75                                                        # réglages classiques de BM25
+
+    notes = []
+    for p in passages:
+        compte = Counter(p["mots"])
+        note = 0
+        for m in mots_requete:
+            if m in compte:
+                rarete = math.log(1 + (nb_passages - nb_passages_avec[m] + 0.5) / (nb_passages_avec[m] + 0.5))
+                frequence = compte[m] * (k1 + 1) / (compte[m] + k1 * (1 - b + b * len(p["mots"]) / longueur_moyenne))
+                note += rarete * frequence
+        if note > 0:
+            notes.append((note, p))
+    notes.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in notes[:nb_resultats]]
+
+
+OUTIL_RECHERCHE = {
+    "name": "chercher_documents",
+    "description": "Cherche dans les documents de l'utilisateur (cours, notes, fiches...) et renvoie les passages "
+                   "les plus pertinents avec leur source. Utilise des mots-clés précis ; tu peux faire plusieurs "
+                   "recherches avec des mots différents si la première ne suffit pas.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"requete": {"type": "string", "description": "Les mots-clés à chercher"}},
+        "required": ["requete"],
+    },
+}
+
+
+def consigne_rag(noms_fichiers):
+    return ("\n\nL'utilisateur a mis ces documents à ta disposition : " + ", ".join(noms_fichiers) + ". "
+            "Quand une question peut concerner ces documents, utilise l'outil chercher_documents avant de répondre. "
+            "Appuie-toi sur les passages trouvés et cite la source entre crochets, par exemple [cours.pdf, passage 3]. "
+            "Si la réponse n'est pas dans les documents, dis-le clairement au lieu d'inventer.")
+
+
 def executer_outil(nom, entree):
     """Fait vraiment le travail quand Claude demande un outil, et renvoie le résultat en texte."""
+    if nom == "chercher_documents":
+        # Étape 4 : on renvoie à Claude les passages trouvés, avec leur source
+        trouves = chercher(entree.get("requete", ""), construire_index(signature_documents()))
+        if not trouves:
+            return "Aucun passage trouvé dans les documents pour cette recherche."
+        return "\n\n".join(f"[{p['source']}, passage {p['numero']}]\n{p['texte']}" for p in trouves)
+
     if nom == "heure_actuelle":
         return datetime.now().strftime("%d/%m/%Y, %H:%M")
 
@@ -364,15 +490,22 @@ def repondre(conv, zone_conso):
     textes = []
     usage_message = usage_vide()      # les tokens de CETTE réponse (parfois plusieurs appels avec les outils)
 
+    # 9. S'il y a des documents : on ajoute l'outil de recherche et on prévient Claude
+    systeme, outils = perso["system"], OUTILS
+    documents = [nom for nom, _ in signature_documents()]
+    if documents:
+        systeme += consigne_rag(documents)
+        outils = OUTILS + [OUTIL_RECHERCHE]
+
     while True:   # on boucle tant que Claude veut utiliser des outils
         zone = st.empty()
         texte = ""
         with client.messages.stream(
             model=MODELE,
             max_tokens=16000,
-            system=perso["system"],
+            system=systeme,
             messages=messages,
-            tools=OUTILS,
+            tools=outils,
             cache_control={"type": "ephemeral"},   # met l'historique en cache : les tours suivants coûtent moins cher
         ) as stream:
             for morceau in stream.text_stream:
@@ -401,7 +534,11 @@ def repondre(conv, zone_conso):
         for bloc in message.content:
             if bloc.type == "tool_use":
                 resultat = executer_outil(bloc.name, bloc.input)
-                st.caption(f"🔧 Outil `{bloc.name}` {bloc.input} → **{resultat}**")
+                if bloc.name == "chercher_documents":     # le résultat est long : on n'affiche que les sources
+                    sources = sorted(set(re.findall(r"^\[(.+?), passage \d+\]$", resultat, re.M)))
+                    st.caption(f"🔎 Recherche « {bloc.input.get('requete', '')} » → {', '.join(sources) or 'rien trouvé'}")
+                else:
+                    st.caption(f"🔧 Outil `{bloc.name}` {bloc.input} → **{resultat}**")
                 resultats.append({"type": "tool_result", "tool_use_id": bloc.id, "content": resultat})
         messages.append({"role": "user", "content": resultats})
 
@@ -464,6 +601,20 @@ with st.sidebar:
         if budget != st.session_state.budget_enregistre:
             ecrire_reglage("budget", budget)
             st.session_state.budget_enregistre = budget
+
+    # 9. Les documents pour le RAG
+    docs = signature_documents()
+    with st.expander(f"📚 Mes documents ({len(docs)})"):
+        for nom, _ in docs:
+            st.caption("📄 " + nom)
+        nouveaux = st.file_uploader("Ajouter des documents", type=["pdf", "txt", "md"],
+                                    accept_multiple_files=True, key=f"upload-{st.session_state.get('nb_envois', 0)}")
+        if nouveaux:
+            for fichier in nouveaux:
+                with open(os.path.join(DOSSIER_DOCS, os.path.basename(fichier.name)), "wb") as f:
+                    f.write(fichier.getvalue())
+            st.session_state.nb_envois = st.session_state.get("nb_envois", 0) + 1   # vide la zone d'envoi
+            st.rerun()
 
     st.subheader("💬 Conversations")
     if st.button("➕ Nouvelle conversation"):
