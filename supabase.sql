@@ -9,3 +9,6 @@ create table if not exists public.chatbot_reglages (
 -- Personne ne peut lire ou modifier la table avec la clé publique ;
 -- seul le chatbot, avec la clé secrète (gardée dans les Secrets Streamlit), y a accès.
 alter table public.chatbot_reglages enable row level security;
+
+-- Autorise la clé secrète (rôle service_role) à lire, ajouter et modifier les lignes.
+grant select, insert, update on public.chatbot_reglages to service_role;
