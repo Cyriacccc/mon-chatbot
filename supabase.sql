@@ -12,3 +12,25 @@ alter table public.chatbot_reglages enable row level security;
 
 -- Autorise la clé secrète (rôle service_role) à lire, ajouter et modifier les lignes.
 grant select, insert, update on public.chatbot_reglages to service_role;
+
+
+-- ---------------------------------------------------------------------
+-- Les conversations : une ligne par conversation, tout son contenu en JSON.
+create table if not exists public.chatbot_conversations (
+  id      text primary key,
+  donnees jsonb not null,
+  date    timestamptz not null default now()
+);
+alter table public.chatbot_conversations enable row level security;
+grant select, insert, update, delete on public.chatbot_conversations to service_role;
+
+
+-- ---------------------------------------------------------------------
+-- Les documents ajoutés depuis la page (pour le RAG) : on garde seulement leur texte.
+create table if not exists public.chatbot_documents (
+  nom   text primary key,
+  texte text not null,
+  date  timestamptz not null default now()
+);
+alter table public.chatbot_documents enable row level security;
+grant select, insert, update, delete on public.chatbot_documents to service_role;

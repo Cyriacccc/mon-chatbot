@@ -248,8 +248,13 @@ def afficher_conso(zone, conv):
 
 
 # =====================================================================
-# 3. PLUSIEURS CONVERSATIONS (chacune dans son fichier)
+# 3. PLUSIEURS CONVERSATIONS
+#    - en ligne : dans la table chatbot_conversations de Supabase (survit aux redémarrages)
+#    - sur ton PC (sans Supabase) : un fichier .json par conversation dans conversations/
 # =====================================================================
+TABLE_CONVERSATIONS = "chatbot_conversations"
+
+
 def chemin(conv):
     return os.path.join(DOSSIER, conv["id"] + ".json")
 
@@ -266,18 +271,40 @@ def nouvelle_conversation(personnalite="💌 Amoureux"):
 
 
 def sauvegarder(conv):
-    os.makedirs(DOSSIER, exist_ok=True)
     conv["date"] = datetime.now().isoformat()
+    if base:
+        try:
+            base.table(TABLE_CONVERSATIONS).upsert(
+                {"id": conv["id"], "donnees": conv, "date": conv["date"]}
+            ).execute()
+        except Exception as e:
+            st.toast(f"⚠️ Impossible d'enregistrer la conversation : {e}")
+        return
+    os.makedirs(DOSSIER, exist_ok=True)
     with open(chemin(conv), "w", encoding="utf-8") as f:
         json.dump(conv, f, ensure_ascii=False, indent=2)
 
 
 def supprimer(conv):
+    if base:
+        try:
+            base.table(TABLE_CONVERSATIONS).delete().eq("id", conv["id"]).execute()
+        except Exception as e:
+            st.toast(f"⚠️ Impossible de supprimer la conversation : {e}")
+        return
     if os.path.exists(chemin(conv)):
         os.remove(chemin(conv))
 
 
 def lister_conversations():
+    if base:
+        try:
+            lignes = base.table(TABLE_CONVERSATIONS).select("donnees").order("date", desc=True).execute().data
+            return [ligne["donnees"] for ligne in lignes]
+        except Exception as e:
+            st.toast(f"⚠️ Impossible de lire les conversations : {e}")
+            return []
+
     os.makedirs(DOSSIER, exist_ok=True)
 
     # On récupère l'ancienne sauvegarde unique (conversation.json) si elle existe encore
@@ -356,13 +383,48 @@ def mots(texte):
     return [m for m in re.findall(r"[a-z0-9]+", texte) if len(m) > 1 and m not in MOTS_VIDES]
 
 
-def lire_fichier(chemin_fichier):
-    """Étape 1 : récupère le texte d'un fichier PDF, TXT ou MD."""
-    if chemin_fichier.lower().endswith(".pdf"):
+def extraire_texte(nom, octets):
+    """Étape 1 : récupère le texte d'un fichier PDF, TXT ou MD (à partir de son contenu brut)."""
+    if nom.lower().endswith(".pdf"):
+        from io import BytesIO
         from pypdf import PdfReader
-        return "\n".join(page.extract_text() or "" for page in PdfReader(chemin_fichier).pages)
-    with open(chemin_fichier, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+        return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(octets)).pages)
+    return octets.decode("utf-8", errors="ignore")
+
+
+# Les documents viennent de deux endroits :
+#  - "dossier" : le dossier documents/ (envoyé sur GitHub, toujours présent)
+#  - "base"    : les documents ajoutés depuis la page, rangés dans Supabase (seulement leur texte)
+TABLE_DOCUMENTS = "chatbot_documents"
+
+
+def ajouter_document(nom, octets):
+    nom = os.path.basename(nom)
+    if base:
+        try:
+            base.table(TABLE_DOCUMENTS).upsert({
+                "nom": nom, "texte": extraire_texte(nom, octets), "date": datetime.now().isoformat(),
+            }).execute()
+        except Exception as e:
+            st.toast(f"⚠️ Impossible d'enregistrer le document : {e}")
+        return
+    os.makedirs(DOSSIER_DOCS, exist_ok=True)
+    with open(os.path.join(DOSSIER_DOCS, nom), "wb") as f:
+        f.write(octets)
+
+
+def supprimer_document(nom):
+    try:
+        base.table(TABLE_DOCUMENTS).delete().eq("nom", nom).execute()
+    except Exception as e:
+        st.toast(f"⚠️ Impossible de supprimer le document : {e}")
+
+
+def texte_document(nom, origine):
+    if origine == "base":
+        return base.table(TABLE_DOCUMENTS).select("texte").eq("nom", nom).execute().data[0]["texte"]
+    with open(os.path.join(DOSSIER_DOCS, nom), "rb") as f:
+        return extraire_texte(nom, f.read())
 
 
 def decouper(texte, taille=1000, chevauchement=200):
@@ -384,19 +446,26 @@ def decouper(texte, taille=1000, chevauchement=200):
 
 
 def signature_documents():
-    """La liste des fichiers avec leur date de modification (sert à savoir si quelque chose a changé)."""
-    os.makedirs(DOSSIER_DOCS, exist_ok=True)
-    return tuple(sorted(
-        (nom, os.path.getmtime(os.path.join(DOSSIER_DOCS, nom)))
-        for nom in os.listdir(DOSSIER_DOCS) if nom.lower().endswith(EXTENSIONS)
-    ))
+    """La liste des documents : (nom, version, origine). La version (une date) sert à savoir si quelque chose a changé."""
+    docs = []
+    if os.path.isdir(DOSSIER_DOCS):
+        for nom in os.listdir(DOSSIER_DOCS):
+            if nom.lower().endswith(EXTENSIONS):
+                docs.append((nom, str(os.path.getmtime(os.path.join(DOSSIER_DOCS, nom))), "dossier"))
+    if base:
+        try:
+            for ligne in base.table(TABLE_DOCUMENTS).select("nom, date").execute().data:
+                docs.append((ligne["nom"], ligne["date"], "base"))
+        except Exception as e:
+            st.toast(f"⚠️ Impossible de lire la liste des documents : {e}")
+    return tuple(sorted(docs))
 
 
-@st.cache_data   # Streamlit garde le résultat en mémoire : on ne relit les fichiers que s'ils changent
+@st.cache_data   # Streamlit garde le résultat en mémoire : on ne relit les documents que s'ils changent
 def construire_index(signature):
     passages = []
-    for nom, _ in signature:
-        for numero, texte in enumerate(decouper(lire_fichier(os.path.join(DOSSIER_DOCS, nom))), 1):
+    for nom, _, origine in signature:
+        for numero, texte in enumerate(decouper(texte_document(nom, origine)), 1):
             passages.append({"source": nom, "numero": numero, "texte": texte, "mots": mots(texte)})
     return passages
 
@@ -492,7 +561,7 @@ def repondre(conv, zone_conso):
 
     # 9. S'il y a des documents : on ajoute l'outil de recherche et on prévient Claude
     systeme, outils = perso["system"], OUTILS
-    documents = [nom for nom, _ in signature_documents()]
+    documents = [nom for nom, _, _ in signature_documents()]
     if documents:
         systeme += consigne_rag(documents)
         outils = OUTILS + [OUTIL_RECHERCHE]
@@ -605,14 +674,20 @@ with st.sidebar:
     # 9. Les documents pour le RAG
     docs = signature_documents()
     with st.expander(f"📚 Mes documents ({len(docs)})"):
-        for nom, _ in docs:
-            st.caption("📄 " + nom)
+        for nom, _, origine in docs:
+            if origine == "base":                          # ajouté depuis la page : on peut le retirer
+                col_nom, col_suppr = st.columns([5, 1])
+                col_nom.caption("📄 " + nom)
+                if col_suppr.button("✕", key="suppr-doc-" + nom, help="Retirer ce document"):
+                    supprimer_document(nom)
+                    st.rerun()
+            else:
+                st.caption("📄 " + nom)
         nouveaux = st.file_uploader("Ajouter des documents", type=["pdf", "txt", "md"],
                                     accept_multiple_files=True, key=f"upload-{st.session_state.get('nb_envois', 0)}")
         if nouveaux:
             for fichier in nouveaux:
-                with open(os.path.join(DOSSIER_DOCS, os.path.basename(fichier.name)), "wb") as f:
-                    f.write(fichier.getvalue())
+                ajouter_document(fichier.name, fichier.getvalue())
             st.session_state.nb_envois = st.session_state.get("nb_envois", 0) + 1   # vide la zone d'envoi
             st.rerun()
 
