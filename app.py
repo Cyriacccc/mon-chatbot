@@ -173,6 +173,8 @@ cle_supabase = lire_secret("SUPABASE_KEY")
 base = None
 if url_supabase and cle_supabase:
     from supabase import create_client
+    # On garde seulement "https://xxxx.supabase.co" : la bibliothèque ajoute elle-même /rest/v1
+    url_supabase = url_supabase.strip().rstrip("/").removesuffix("/rest/v1").rstrip("/")
     base = create_client(url_supabase, cle_supabase)
 
 
