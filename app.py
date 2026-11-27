@@ -41,6 +41,24 @@ MODELE_DEFAUT = "claude-opus-5-5"
 
 
 # =====================================================================
+# 11. LA RECHERCHE WEB : un outil fourni par Anthropic, exécuté sur SES serveurs
+#     (contrairement à nos outils, on n'a rien à coder : on le déclare, et Claude cherche tout seul)
+# =====================================================================
+PRIX_RECHERCHE = 10 / 1000      # 10 $ les 1 000 recherches = 1 centime par recherche
+
+
+def outil_web(modele):
+    # Opus et Sonnet 5.5 ont la version récente (qui filtre les résultats avant de les lire) ;
+    # pour Haiku on prend la version de base.
+    version = "web_search_20250305" if "haiku" in modele else "web_search_20260209"
+    return {"type": version, "name": "web_search", "max_uses": 5}   # au maximum 5 recherches par réponse
+
+
+CONSIGNE_WEB = ("\n\nTu peux chercher sur internet avec l'outil web_search pour l'actualité, les informations "
+                "récentes ou ce que tu ne sais pas. Nous sommes le " + datetime.now().strftime("%d/%m/%Y") + ".")
+
+
+# =====================================================================
 # 1. LES PERSONNALITÉS : consigne + couleurs de la page
 # =====================================================================
 PERSONNALITES = {
@@ -153,12 +171,12 @@ TYPES_TOKENS = ("input", "output", "cache_read", "cache_write")
 
 
 def usage_vide():
-    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cout": 0.0}
+    return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "recherches": 0, "cout": 0.0}
 
 
 def cout_selon(u, prix):
-    """Coût en dollars : tokens x prix, divisé par 1 million."""
-    return sum(u.get(k, 0) * prix[k] for k in TYPES_TOKENS) / 1_000_000
+    """Coût en dollars : tokens x prix, divisé par 1 million, + le prix des recherches web."""
+    return sum(u.get(k, 0) * prix[k] for k in TYPES_TOKENS) / 1_000_000 + u.get("recherches", 0) * PRIX_RECHERCHE
 
 
 def cout(u):
@@ -176,8 +194,10 @@ def ajouter_usage(total, usage_api, modele):
         "output": usage_api.output_tokens or 0,
         "cache_read": usage_api.cache_read_input_tokens or 0,
         "cache_write": usage_api.cache_creation_input_tokens or 0,
+        # 11. le nombre de recherches web faites pendant cet appel
+        "recherches": getattr(usage_api.server_tool_use, "web_search_requests", 0) or 0,
     }
-    for k in TYPES_TOKENS:
+    for k in TYPES_TOKENS + ("recherches",):
         total[k] = total.get(k, 0) + appel[k]
     total["cout"] += cout_selon(appel, MODELES[modele]["prix"])
 
@@ -597,6 +617,14 @@ def repondre(conv, zone_conso):
         systeme += consigne_rag(documents)
         outils = OUTILS + [OUTIL_RECHERCHE]
 
+    # 11. Si la recherche web est activée : on ajoute l'outil d'Anthropic
+    if st.session_state.get("web", True):
+        systeme += CONSIGNE_WEB
+        outils = outils + [outil_web(modele)]
+    sources_web = {}                  # url -> titre des pages citées par Claude
+    pages_vues = {}                   # url -> titre des pages trouvées par la recherche (si Claude ne cite rien)
+    nb_pauses = 0
+
     while True:   # on boucle tant que Claude veut utiliser des outils
         zone = st.empty()
         texte = ""
@@ -622,9 +650,28 @@ def repondre(conv, zone_conso):
         ajouter_au_total(message.usage, modele)
         afficher_conso(zone_conso, conv)
 
+        # 11. Ce que la recherche web a fait pendant cet appel : les requêtes, et les pages citées
+        for bloc in message.content:
+            if bloc.type == "server_tool_use" and bloc.name == "web_search":
+                st.caption(f"🌐 Recherche web « {bloc.input.get('query', '')} »")
+            if bloc.type == "web_search_tool_result" and isinstance(bloc.content, list):
+                for resultat in bloc.content:
+                    if getattr(resultat, "url", None):
+                        pages_vues[resultat.url] = getattr(resultat, "title", None) or resultat.url
+            if bloc.type == "text":
+                for citation in (getattr(bloc, "citations", None) or []):
+                    if getattr(citation, "url", None):
+                        sources_web[citation.url] = getattr(citation, "title", None) or citation.url
+
         if message.stop_reason == "refusal":
             textes.append("_(Claude a préféré ne pas répondre à ce message.)_")
             break
+        if message.stop_reason == "pause_turn" and nb_pauses < 5:
+            # Claude a fait beaucoup de recherches et l'API a fait une pause : on le relance là où il en était
+            # (on renvoie sa réponse telle quelle, SANS ajouter de message de notre part)
+            nb_pauses += 1
+            messages.append({"role": "assistant", "content": message.content})
+            continue
         if message.stop_reason != "tool_use":       # Claude a fini : pas d'outil demandé
             break
 
@@ -642,7 +689,15 @@ def repondre(conv, zone_conso):
                 resultats.append({"type": "tool_result", "tool_use_id": bloc.id, "content": resultat})
         messages.append({"role": "user", "content": resultats})
 
-    return "\n\n".join(textes) or "(pas de réponse)", usage_message
+    reponse = "\n\n".join(textes) or "(pas de réponse)"
+    # On ajoute les sources sous la réponse (elles seront sauvegardées avec) :
+    # les pages citées par Claude, ou à défaut les premières pages trouvées par la recherche
+    if sources_web or pages_vues:
+        etiquette = "🔗 **Sources :** " if sources_web else "🔗 **Pages consultées :** "
+        liens = " · ".join(f"[{titre[:60]}]({url})" for url, titre in list((sources_web or pages_vues).items())[:4])
+        reponse += "\n\n" + etiquette + liens
+        st.markdown(etiquette + liens)
+    return reponse, usage_message
 
 
 def afficher_contenu(contenu):
@@ -659,7 +714,9 @@ def afficher_contenu(contenu):
 
 def legende_usage(u, modele=None):
     nom = f" · {MODELES[modele]['nom']}" if modele in MODELES else ""
-    st.caption(f"🪙 {fmt_tokens(nb_tokens(u))} tokens · {fmt_cout(cout(u))}{nom}")
+    n = u.get("recherches", 0)
+    web = f" · 🌐 {n} recherche{'s' if n > 1 else ''}" if n else ""
+    st.caption(f"🪙 {fmt_tokens(nb_tokens(u))} tokens · {fmt_cout(cout(u))}{nom}{web}")
 
 
 # =====================================================================
@@ -708,6 +765,9 @@ with st.sidebar:
         conv["modele"] = modele_choisi
         if conv["messages"]:
             sauvegarder(conv)
+
+    # 11. Activer / désactiver la recherche web (1 centime par recherche)
+    st.toggle("🌐 Recherche web", value=True, key="web", help="Claude peut chercher sur internet. 1 centime par recherche.")
 
     zone_conso = st.empty()                     # la petite carte + jauge (remplie plus bas)
 
