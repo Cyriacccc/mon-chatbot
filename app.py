@@ -85,17 +85,14 @@ def injecter_style(p):
 [data-testid="stBaseButton-primary"] {{ background: {p["couleur"]}; border-color: {p["couleur"]}; }}
 [data-testid="stBaseButton-primary"]:hover {{ background: {p["fonce"]}; border-color: {p["fonce"]}; }}
 
-/* La carte de consommation */
-.conso {{ background: #fff; border-radius: 16px; padding: 14px 16px; box-shadow: 0 2px 10px rgba(0,0,0,.05); }}
-.conso-ligne {{ display: flex; justify-content: space-between; gap: 8px; font-size: 14px; color: #6b5f65; }}
-.conso-gros {{ font-size: 26px; font-weight: 800; color: {p["couleur"]}; line-height: 1.2; }}
-.conso-sep {{ border-top: 1px solid #f0e8ec; margin: 10px 0; }}
-.conso-note {{ font-size: 12px; color: #9a8f95; margin-top: 8px; }}
-
-/* La jauge du budget */
-.jauge {{ height: 14px; background: #f0e8ec; border-radius: 999px; overflow: hidden; margin: 8px 0 6px; }}
-.jauge-rempli {{ height: 100%; border-radius: 999px; min-width: 6px; }}
-.jauge-alerte {{ font-size: 13px; font-weight: 800; color: #e03131; }}
+/* La petite carte de consommation + jauge */
+.conso {{ background: #fff; border-radius: 12px; padding: 10px 12px; margin-bottom: 4px; box-shadow: 0 1px 6px rgba(0,0,0,.05); }}
+.conso-ligne {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; color: #6b5f65; }}
+.conso-gros {{ font-size: 18px; font-weight: 800; color: {p["couleur"]}; }}
+.conso-petit {{ font-size: 12px; color: #9a8f95; }}
+.jauge {{ height: 6px; background: #f0e8ec; border-radius: 999px; overflow: hidden; margin: 6px 0; }}
+.jauge-rempli {{ height: 100%; border-radius: 999px; min-width: 4px; }}
+.jauge-alerte {{ font-size: 12px; font-weight: 800; color: #e03131; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -163,23 +160,68 @@ def fmt_cout(c):
     return f"{c:.4f}".replace(".", ",") + " $"
 
 
+# =====================================================================
+# 8. LE COMPTEUR QUI SURVIT AUX REDÉMARRAGES
+#    - en ligne : rangé dans une base de données Supabase
+#    - sur ton PC (sans Supabase) : rangé dans le fichier reglages.json
+# =====================================================================
 FICHIER_REGLAGES = "reglages.json"
+TABLE = "chatbot_reglages"
+
+url_supabase = lire_secret("SUPABASE_URL")
+cle_supabase = lire_secret("SUPABASE_KEY")
+base = None
+if url_supabase and cle_supabase:
+    from supabase import create_client
+    base = create_client(url_supabase, cle_supabase)
 
 
-def charger_budget():
-    if os.path.exists(FICHIER_REGLAGES):
-        with open(FICHIER_REGLAGES, "r", encoding="utf-8") as f:
-            return json.load(f).get("budget", 5.0)
-    return 5.0
+def lire_reglage(cle, defaut):
+    """Lit une valeur enregistrée (le budget, le total...)."""
+    try:
+        if base:
+            lignes = base.table(TABLE).select("valeur").eq("cle", cle).execute().data
+            return lignes[0]["valeur"] if lignes else defaut
+        if os.path.exists(FICHIER_REGLAGES):
+            with open(FICHIER_REGLAGES, "r", encoding="utf-8") as f:
+                return json.load(f).get(cle, defaut)
+    except Exception as e:
+        st.toast(f"⚠️ Impossible de lire le compteur : {e}")
+    return defaut
 
 
-def sauvegarder_budget(budget):
-    with open(FICHIER_REGLAGES, "w", encoding="utf-8") as f:
-        json.dump({"budget": budget}, f)
+def ecrire_reglage(cle, valeur):
+    """Enregistre une valeur (elle remplace l'ancienne)."""
+    try:
+        if base:
+            base.table(TABLE).upsert({"cle": cle, "valeur": valeur}).execute()
+            return
+        tout = {}
+        if os.path.exists(FICHIER_REGLAGES):
+            with open(FICHIER_REGLAGES, "r", encoding="utf-8") as f:
+                tout = json.load(f)
+        tout[cle] = valeur
+        with open(FICHIER_REGLAGES, "w", encoding="utf-8") as f:
+            json.dump(tout, f)
+    except Exception as e:
+        st.toast(f"⚠️ Impossible d'enregistrer le compteur : {e}")
 
 
-def jauge(depense, budget):
-    """Renvoie le HTML d'une barre qui se remplit selon la part du budget déjà dépensée."""
+def ajouter_au_total(usage_api):
+    """Relit le total enregistré, y ajoute les tokens de cet appel, et le réenregistre."""
+    total = lire_reglage("total", usage_vide())
+    ajouter_usage(total, usage_api)
+    ecrire_reglage("total", total)
+    st.session_state.total = total
+
+
+def afficher_conso(zone, conv):
+    """Remplit la petite carte : total dépensé, jauge du budget, et coût de cette conversation."""
+    total = st.session_state.get("total", usage_vide())
+    budget = st.session_state.get("budget", 5.0)
+    depense = cout(total)
+    u_conv = conv.get("usage", usage_vide())
+
     pourcent = depense / budget * 100 if budget else 0
     if pourcent < 60:
         couleur = "#2f9e44"      # vert : tranquille
@@ -187,36 +229,14 @@ def jauge(depense, budget):
         couleur = "#f08c00"      # orange : attention
     else:
         couleur = "#e03131"      # rouge : presque au bout
-    largeur = min(pourcent, 100)
     alerte = '<div class="jauge-alerte">⚠️ Budget dépassé</div>' if pourcent >= 100 else ""
-    return f"""
-  <div class="jauge"><div class="jauge-rempli" style="width:{largeur}%; background:{couleur}"></div></div>
-  <div class="conso-ligne"><span>{fmt_cout(depense)} sur {fmt_cout(budget)}</span><span><b>{pourcent:.1f} %</b></span></div>
-  {alerte}"""
-
-
-def afficher_conso(zone, conv):
-    """Remplit la carte de consommation de la barre latérale."""
-    budget = st.session_state.get("budget", 5.0)
-    u_conv = conv.get("usage", usage_vide())
-    u_tout = usage_vide()
-    for c in lister_conversations():
-        if c["id"] != conv["id"]:
-            for k in u_tout:
-                u_tout[k] += c.get("usage", {}).get(k, 0)
-    for k in u_tout:
-        u_tout[k] += u_conv[k]
 
     zone.markdown(f"""
-<div class="conso">
-  <div class="conso-ligne"><span>Cette conversation</span><span>{fmt_tokens(nb_tokens(u_conv))} tokens</span></div>
-  <div class="conso-gros">{fmt_cout(cout(u_conv))}</div>
-  <div class="conso-ligne"><span>↑ envoyés {fmt_tokens(u_conv["input"] + u_conv["cache_read"] + u_conv["cache_write"])}</span><span>↓ écrits {fmt_tokens(u_conv["output"])}</span></div>
-  <div class="conso-sep"></div>
-  <div class="conso-ligne"><span>Toutes les conversations</span><span>{fmt_tokens(nb_tokens(u_tout))} tokens</span></div>
-  <div class="conso-gros" style="font-size:20px">{fmt_cout(cout(u_tout))}</div>
-  {jauge(cout(u_tout), budget)}
-  <div class="conso-note">Estimation d'après les prix de {MODELE}. Le montant exact est dans la console Anthropic.</div>
+<div class="conso" title="Estimation d'après les prix de {MODELE}. Le montant exact est dans la console Anthropic.">
+  <div class="conso-ligne"><span class="conso-gros">🪙 {fmt_cout(depense)}</span><span>sur {budget:.2f} $ · <b>{pourcent:.1f} %</b></span></div>
+  <div class="jauge"><div class="jauge-rempli" style="width:{min(pourcent, 100)}%; background:{couleur}"></div></div>
+  <div class="conso-petit">Cette conversation : {fmt_cout(cout(u_conv))} · {fmt_tokens(nb_tokens(u_conv))} tokens</div>
+  {alerte}
 </div>
 """, unsafe_allow_html=True)
 
@@ -364,6 +384,7 @@ def repondre(conv, zone_conso):
         # 7. On compte les tokens de cet appel, et on met la carte à jour tout de suite
         ajouter_usage(usage_message, message.usage)
         ajouter_usage(conv["usage"], message.usage)
+        ajouter_au_total(message.usage)
         afficher_conso(zone_conso, conv)
 
         if message.stop_reason == "refusal":
@@ -410,6 +431,20 @@ if "conv" not in st.session_state:
 conv = st.session_state.conv
 conv.setdefault("usage", usage_vide())          # les anciennes conversations n'avaient pas de compteur
 
+# Au début de la visite : on lit le total et le budget enregistrés
+if "total" not in st.session_state:
+    total = lire_reglage("total", None)
+    if total is None:                           # première fois : on repart de la somme des conversations
+        total = usage_vide()
+        for c in lister_conversations():
+            for k in total:
+                total[k] += c.get("usage", {}).get(k, 0)
+        ecrire_reglage("total", total)
+    st.session_state.total = total
+if "budget" not in st.session_state:
+    st.session_state.budget = float(lire_reglage("budget", 5.0))
+    st.session_state.budget_enregistre = st.session_state.budget
+
 # ---------- Barre latérale ----------
 with st.sidebar:
     noms = list(PERSONNALITES)
@@ -420,14 +455,13 @@ with st.sidebar:
         if conv["messages"]:
             sauvegarder(conv)
 
-    st.subheader("🪙 Consommation")
-    zone_conso = st.empty()
+    zone_conso = st.empty()                     # la petite carte + jauge (remplie plus bas)
 
-    if "budget" not in st.session_state:
-        st.session_state.budget = charger_budget()
-    budget = st.number_input("🎯 Mon budget ($)", min_value=0.5, step=0.5, key="budget")
-    if budget != charger_budget():
-        sauvegarder_budget(budget)
+    with st.expander("🎯 Changer le budget"):
+        budget = st.number_input("Budget ($)", min_value=0.5, step=0.5, key="budget")
+        if budget != st.session_state.budget_enregistre:
+            ecrire_reglage("budget", budget)
+            st.session_state.budget_enregistre = budget
 
     st.subheader("💬 Conversations")
     if st.button("➕ Nouvelle conversation"):
