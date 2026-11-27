@@ -567,8 +567,69 @@ def consigne_rag(noms_fichiers):
             "Si la réponse n'est pas dans les documents, dis-le clairement au lieu d'inventer.")
 
 
+# =====================================================================
+# 12. LA MÉMOIRE À LONG TERME : ce que Claude retient sur toi, d'une conversation à l'autre
+#     - Claude décide lui-même de retenir (outil memoriser) ou d'oublier (outil oublier)
+#     - les souvenirs sont rangés comme le compteur (Supabase en ligne, reglages.json sur ton PC)
+#     - à chaque message, on les lui redonne dans la consigne system
+# =====================================================================
+OUTILS_MEMOIRE = [
+    {
+        "name": "memoriser",
+        "description": "Retient durablement une information sur l'utilisateur, pour toutes les prochaines conversations. "
+                       "À utiliser pour ce qui reste vrai longtemps : prénom, études, métier, goûts, projets, préférences "
+                       "de réponse. Pas pour ce qui est passager (humeur du jour, question ponctuelle). "
+                       "Une seule information courte par appel, écrite à la 3e personne.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"fait": {"type": "string", "description": "Ex : « Il s'appelle Léo et étudie la biologie. »"}},
+            "required": ["fait"],
+        },
+    },
+    {
+        "name": "oublier",
+        "description": "Efface un souvenir qui est faux, dépassé, ou que l'utilisateur demande d'oublier.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"numero": {"type": "integer", "description": "Le numéro du souvenir dans la liste"}},
+            "required": ["numero"],
+        },
+    },
+]
+
+
+def lire_souvenirs():
+    return lire_reglage("souvenirs", [])
+
+
+def consigne_memoire(souvenirs):
+    if souvenirs:
+        liste = "\n".join(f"#{i} {s['fait']}" for i, s in enumerate(souvenirs, 1))
+        texte = "\n\nCe que tu sais déjà sur l'utilisateur (tes souvenirs des conversations précédentes) :\n" + liste
+    else:
+        texte = "\n\nTu n'as encore aucun souvenir sur l'utilisateur."
+    return texte + ("\nUtilise ces souvenirs naturellement, sans les réciter. Quand l'utilisateur t'apprend quelque "
+                    "chose de durable sur lui, retiens-le avec l'outil memoriser. Si un souvenir devient faux, "
+                    "efface-le avec oublier (puis mémorise la version corrigée).")
+
+
 def executer_outil(nom, entree):
     """Fait vraiment le travail quand Claude demande un outil, et renvoie le résultat en texte."""
+    if nom == "memoriser":
+        souvenirs = lire_souvenirs()
+        souvenirs.append({"fait": entree["fait"].strip(), "date": datetime.now().strftime("%d/%m/%Y")})
+        ecrire_reglage("souvenirs", souvenirs)
+        return f"C'est retenu (souvenir n°{len(souvenirs)})."
+
+    if nom == "oublier":
+        souvenirs = lire_souvenirs()
+        numero = entree.get("numero", 0)
+        if not 1 <= numero <= len(souvenirs):
+            return "Ce numéro de souvenir n'existe pas."
+        oublie = souvenirs.pop(numero - 1)
+        ecrire_reglage("souvenirs", souvenirs)
+        return f"Oublié : « {oublie['fait']} ». Attention, les numéros des souvenirs suivants ont changé."
+
     if nom == "chercher_documents":
         # Étape 4 : on renvoie à Claude les passages trouvés, avec leur source
         trouves = chercher(entree.get("requete", ""), construire_index(signature_documents()))
@@ -610,12 +671,19 @@ def repondre(conv, zone_conso):
     textes = []
     usage_message = usage_vide()      # les tokens de CETTE réponse (parfois plusieurs appels avec les outils)
 
+    # 12. La mémoire : on lui donne ses souvenirs et les outils pour en ajouter ou en effacer
+    memoire_active = st.session_state.get("memoire", True)
+
     # 9. S'il y a des documents : on ajoute l'outil de recherche et on prévient Claude
     systeme, outils = perso["system"], OUTILS
     documents = [nom for nom, _, _ in signature_documents()]
     if documents:
         systeme += consigne_rag(documents)
         outils = OUTILS + [OUTIL_RECHERCHE]
+
+    if memoire_active:
+        systeme += consigne_memoire(lire_souvenirs())
+        outils = outils + OUTILS_MEMOIRE
 
     # 11. Si la recherche web est activée : on ajoute l'outil d'Anthropic
     if st.session_state.get("web", True):
@@ -684,6 +752,10 @@ def repondre(conv, zone_conso):
                 if bloc.name == "chercher_documents":     # le résultat est long : on n'affiche que les sources
                     sources = sorted(set(re.findall(r"^\[(.+?), passage \d+\]$", resultat, re.M)))
                     st.caption(f"🔎 Recherche « {bloc.input.get('requete', '')} » → {', '.join(sources) or 'rien trouvé'}")
+                elif bloc.name == "memoriser":
+                    st.caption(f"💭 Retenu : « {bloc.input.get('fait', '')} »")
+                elif bloc.name == "oublier":
+                    st.caption(f"💭 {resultat.split('. Attention')[0]}")
                 else:
                     st.caption(f"🔧 Outil `{bloc.name}` {bloc.input} → **{resultat}**")
                 resultats.append({"type": "tool_result", "tool_use_id": bloc.id, "content": resultat})
@@ -768,6 +840,7 @@ with st.sidebar:
 
     # 11. Activer / désactiver la recherche web (1 centime par recherche)
     st.toggle("🌐 Recherche web", value=True, key="web", help="Claude peut chercher sur internet. 1 centime par recherche.")
+    st.toggle("💭 Mémoire", value=True, key="memoire", help="Claude retient ce que tu lui apprends sur toi, d'une conversation à l'autre.")
 
     zone_conso = st.empty()                     # la petite carte + jauge (remplie plus bas)
 
@@ -796,6 +869,19 @@ with st.sidebar:
                 ajouter_document(fichier.name, fichier.getvalue())
             st.session_state.nb_envois = st.session_state.get("nb_envois", 0) + 1   # vide la zone d'envoi
             st.rerun()
+
+    # 12. Les souvenirs : tu vois ce que Claude a retenu, et tu peux en effacer
+    souvenirs = lire_souvenirs()
+    with st.expander(f"💭 Ce que je sais de toi ({len(souvenirs)})"):
+        if not souvenirs:
+            st.caption("Rien pour l'instant. Parle-moi de toi !")
+        for i, s in enumerate(souvenirs):
+            col_fait, col_suppr = st.columns([5, 1])
+            col_fait.caption(f"{s['fait']}  \n_{s.get('date', '')}_")
+            if col_suppr.button("✕", key=f"suppr-souvenir-{i}", help="Effacer ce souvenir"):
+                souvenirs.pop(i)
+                ecrire_reglage("souvenirs", souvenirs)
+                st.rerun()
 
     st.subheader("💬 Conversations")
     if st.button("➕ Nouvelle conversation"):
